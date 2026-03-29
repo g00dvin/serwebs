@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "serwebs"
+version = "0.2.0"
+description = "Web Serial Terminal Manager — lightweight web app for remote serial port management"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pyserial>=3.5",
+    "pyserial-asyncio>=0.6",
+    "pyudev>=0.24.0",
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
+    "pydantic>=2.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+ssh = [
+    "asyncssh>=2.14.0",
+]
+aggregator = [
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+]
+all = [
+    "asyncssh>=2.14.0",
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.25.0",
+]
+
+[project.scripts]
+serwebs = "serwebs.__main__:main"

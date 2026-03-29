@@ -1,0 +1,22 @@
+services:
+  serwebs:
+    build: .
+    container_name: serwebs
+    restart: unless-stopped
+    ports:
+      - "8088:8080"
+      - "2222:2222"  # SSH gateway (optional)
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./backends.yaml:/app/backends.yaml:ro
+      - serwebs-data:/app/data
+    # Grant access to serial devices (uncomment if this node has serial ports)
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    # group_add:
+    #   - dialout
+    environment:
+      - SERWEBS_CONFIG=/app/config.toml
+
+volumes:
+  serwebs-data:

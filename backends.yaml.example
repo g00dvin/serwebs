@@ -1,0 +1,33 @@
+# SerWebs Multi-Backend Aggregator Configuration
+#
+# Copy this file to backends.yaml and configure your backends.
+# Each backend is a remote SerWebs instance.
+# Ports from all backends are aggregated in the central UI
+# with a prefix based on the backend name.
+#
+# Authentication: use either token (JWT) or username/password (Basic Auth).
+#
+# Enable aggregator in config.toml:
+#   [aggregator]
+#   enabled = true
+#   backends_file = "backends.yaml"
+
+backends:
+  - name: lab-rack-1
+    url: http://192.168.1.10:8080
+    # Option 1: JWT token (recommended for automation)
+    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    # Option 2: Basic Auth
+    # username: admin
+    # password: secret
+
+  - name: lab-rack-2
+    url: http://192.168.1.11:8080
+    username: admin
+    password: admin
+    # Set to false to skip SSL verification for self-signed certs
+    # verify_ssl: false
+
+  # - name: remote-dc
+  #   url: https://serwebs.dc2.example.com
+  #   token: "eyJ..."

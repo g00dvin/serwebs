@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f0f1a">
+  <title>SerWebs — Serial Terminal</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/vendor/xterm.min.css">
+  <script src="/vendor/xterm.min.js"></script>
+  <script src="/vendor/addon-fit.min.js"></script>
+  <script src="/vendor/addon-web-links.min.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/ws.js"></script>
+  <script src="/js/terminal.js"></script>
+  <script src="/js/macros.js"></script>
+  <script src="/js/app.js"></script>
+  <script defer src="/vendor/alpine-collapse.min.js"></script>
+  <script defer src="/vendor/alpine.min.js"></script>
+  <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body x-data="app">
+
+  <!-- Login Overlay -->
+  <div class="login-overlay" x-show="!loggedIn" x-cloak>
+    <div class="login-card">
+      <h1>SerWebs</h1>
+      <p>Web Serial Terminal Manager</p>
+      <form @submit.prevent="doLogin" x-show="authConfig?.local_auth !== false">
+        <div class="form-group">
+          <label for="login-user">Username</label>
+          <input id="login-user" class="form-input" type="text"
+                 x-model="loginForm.username" autocomplete="username" required
+                 :disabled="loginLoading">
+        </div>
+        <div class="form-group">
+          <label for="login-pass">Password</label>
+          <input id="login-pass" class="form-input" type="password"
+                 x-model="loginForm.password" autocomplete="current-password" required
+                 :disabled="loginLoading">
+        </div>
+        <div x-show="loginError" class="error-text" x-text="loginError"></div>
+        <button type="submit" class="btn btn-accent btn-block"
+                :class="{ loading: loginLoading }" :disabled="loginLoading"
+                style="margin-top: 1rem;">Login</button>
+      </form>
+      <template x-if="authConfig?.oidc?.enabled">
+        <div>
+          <div class="login-divider" x-show="authConfig?.local_auth">— or —</div>
+          <button class="btn btn-accent btn-block"
+                  @click="SerWebsAuth.startOIDCLogin(authConfig.oidc)">Login with SSO</button>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div class="app-layout" x-show="loggedIn" x-cloak>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>SerWebs</h2>
+        <div class="user-badge">
+          <span class="role-tag" :class="user?.role" x-text="user?.role"></span>
+          <span class="user-info" x-text="user?.username"></span>
+          <button class="btn btn-sm" @click="doLogout" title="Logout" aria-label="Logout">Exit</button>
+        </div>
+      </div>
+
+      <!-- Tag filter -->
+      <div class="port-filter">
+        <input type="text" x-model="portFilter" placeholder="Filter ports..."
+               aria-label="Filter ports">
+        <div class="tag-filter" x-show="allTags.length > 0">
+          <template x-for="tag in allTags" :key="tag">
+            <button class="tag-btn" :class="{ active: activeTagFilter === tag }"
+                    @click="activeTagFilter = activeTagFilter === tag ? '' : tag"
+                    x-text="tag"></button>
+          </template>
+          <button class="tag-btn tag-clear" x-show="activeTagFilter"
+                  @click="activeTagFilter = ''">Clear</button>
+        </div>
+      </div>
+
+      <div class="port-list" role="list">
+        <div x-show="ports.length === 0" style="padding: 1rem; text-align: center; color: var(--text-secondary);">
+          No serial ports detected
+        </div>
+        <template x-for="port in filteredPorts" :key="port.id">
+          <div class="port-item" role="listitem"
+               :class="[portStatusClass(port.status), activePort === port.id ? 'active' : '']"
+               @click="port.status === 'open' ? connectTerminal(port.id) : null">
+            <div class="port-name">
+              <span class="status-dot" :title="portStatusLabel(port.status)"></span>
+              <span x-text="portDisplayName(port)"></span>
+              <span class="remote-badge" x-show="port._remote" x-text="port._backend" :title="port._backendUrl"></span>
+              <span class="port-status-label" x-text="portStatusLabel(port.status)"></span>
+            </div>
+            <div class="port-id-sub" x-show="port._remote" x-text="port._originalId + ' @ ' + port._backendUrl"
+                 style="font-size:0.65rem; opacity:0.6;"></div>
+            <div class="port-id-sub" x-show="!port._remote && port.alias" x-text="port.id"></div>
+            <div class="port-desc" x-show="port.description" x-text="port.description"></div>
+            <!-- Tags -->
+            <div class="port-tags" x-show="port.tags && port.tags.length">
+              <template x-for="tag in (port.tags || [])" :key="tag">
+                <span class="port-tag" x-text="tag"></span>
+              </template>
+            </div>
+            <div class="port-meta" x-show="port.status === 'open'">
+              <span x-text="port.settings?.baudrate + ' baud'"></span>
+              <span x-show="port.clients > 0" x-text="' · ' + port.clients + ' client(s)'"></span>
+            </div>
+            <!-- Rename form -->
+            <div class="rename-form" x-show="renamingPort === port.id" @click.stop>
+              <input class="form-input" x-model="renameValue" placeholder="Alias"
+                     @keydown.enter="submitRename(port.id)" @keydown.escape="cancelRename()"
+                     x-ref="renameInput">
+              <button class="btn btn-sm btn-accent" @click.stop="submitRename(port.id)">OK</button>
+              <button class="btn btn-sm" @click.stop="cancelRename()">Cancel</button>
+            </div>
+            <!-- Admin actions -->
+            <div class="port-actions" x-show="isAdmin && renamingPort !== port.id">
+              <button class="btn btn-sm btn-accent"
+                      x-show="port.status === 'free'"
+                      @click.stop="openPort(port.id)"
+                      :class="{ loading: loadingPort === port.id }">
+                Open
+              </button>
+              <button class="btn btn-sm"
+                      x-show="port.status === 'open' && activePort !== port.id"
+                      @click.stop="connectTerminal(port.id)">
+                Connect
+              </button>
+              <button class="btn btn-sm btn-danger"
+                      x-show="port.status === 'open'"
+                      @click.stop="confirmClose(port.id)">
+                Close
+              </button>
+              <button class="btn btn-sm" @click.stop="startRename(port)" title="Rename">Rename</button>
+              <button class="btn btn-sm" @click.stop="editTags(port)" title="Tags">Tags</button>
+              <button class="btn btn-sm" @click.stop="editProfile(port)" title="Profile">Profile</button>
+            </div>
+            <!-- User/viewer actions -->
+            <div class="port-actions" x-show="!isAdmin && port.status === 'open'">
+              <button class="btn btn-sm"
+                      x-show="activePort !== port.id"
+                      @click.stop="connectTerminal(port.id)">
+                Connect
+              </button>
+              <button class="btn btn-sm btn-danger"
+                      x-show="activePort === port.id"
+                      @click.stop="disconnectTerminal()">
+                Disconnect
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Port Settings -->
+      <div class="settings-panel" x-show="isAdmin">
+        <h3 class="settings-toggle" @click="showSettings = !showSettings">
+          Port Settings
+          <span class="settings-arrow" :class="{ open: showSettings }">&#9662;</span>
+        </h3>
+        <div class="settings-grid" x-show="showSettings" x-collapse>
+          <div class="form-group">
+            <label>Baud Rate</label>
+            <select class="form-input" x-model.number="portSettings.baudrate">
+              <option value="9600">9600</option>
+              <option value="19200">19200</option>
+              <option value="38400">38400</option>
+              <option value="57600">57600</option>
+              <option value="115200">115200</option>
+              <option value="230400">230400</option>
+              <option value="460800">460800</option>
+              <option value="921600">921600</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Data Bits</label>
+            <select class="form-input" x-model.number="portSettings.databits">
+              <option value="7">7</option>
+              <option value="8">8</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Parity</label>
+            <select class="form-input" x-model="portSettings.parity">
+              <option value="none">None</option>
+              <option value="even">Even</option>
+              <option value="odd">Odd</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Stop Bits</label>
+            <select class="form-input" x-model.number="portSettings.stopbits">
+              <option value="1">1</option>
+              <option value="2">2</option>
+            </select>
+          </div>
+          <div class="form-group span-2">
+            <label>Flow Control</label>
+            <select class="form-input" x-model="portSettings.flowcontrol">
+              <option value="none">None</option>
+              <option value="rtscts">RTS/CTS</option>
+              <option value="xonxoff">XON/XOFF</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Area -->
+    <main class="main-area">
+      <!-- Toolbar -->
+      <div class="toolbar" x-show="activePort">
+        <span class="toolbar-title">
+          <span x-text="(ports.find(p => p.id === activePort)?.alias) || activePort"></span>
+          <span class="toolbar-port-sub" x-show="ports.find(p => p.id === activePort)?.alias"
+                x-text="'(' + activePort + ')'"></span>
+          <span class="conn-dot" :class="terminalConnected ? 'connected' : 'disconnected'"
+                :title="terminalConnected ? 'Connected' : 'Disconnected'"></span>
+          <span class="remote-badge"
+                x-show="_activePortMeta && _activePortMeta._remote"
+                x-text="_activePortMeta?._backend"
+                :title="_activePortMeta?._backendUrl"></span>
+          <span class="viewer-badge" x-show="isViewer">READ-ONLY</span>
+        </span>
+        <button class="btn" :class="{ active: hexMode }" @click="toggleHexMode"
+                title="Toggle hex mode (Ctrl+H)">HEX</button>
+        <button class="btn" :class="{ active: showTimestamps }" @click="toggleTimestamps"
+                title="Toggle timestamps (Ctrl+T)">Timestamps</button>
+        <button class="btn" @click="clearTerminal" title="Clear terminal (Ctrl+L)">Clear</button>
+        <button class="btn" @click="saveLog" title="Save log to file">Save Log</button>
+
+        <!-- Recording controls -->
+        <template x-if="!isViewer">
+          <span class="toolbar-sep"></span>
+        </template>
+        <button class="btn btn-record" x-show="!isViewer && !isRecording"
+                @click="startRecording()" title="Start recording">REC</button>
+        <button class="btn btn-record recording" x-show="!isViewer && isRecording"
+                @click="stopRecording()" title="Stop recording">STOP REC</button>
+        <button class="btn" x-show="!isViewer" @click="showRecordings = !showRecordings"
+                title="View recordings">Recordings</button>
+
+        <button class="btn btn-danger" @click="disconnectTerminal"
+                title="Disconnect (Ctrl+D)">Disconnect</button>
+      </div>
+
+      <!-- Terminal -->
+      <div class="terminal-wrapper">
+        <div id="terminal-container" x-show="activePort"></div>
+        <div class="empty-state" x-show="!activePort">
+          <div class="empty-state-icon">⚡</div>
+          <div class="empty-state-text">Select a port to connect</div>
+          <div class="empty-state-hint" x-show="isAdmin && ports.some(p => p.status === 'free')">
+            Open a port from the sidebar, then click on it to start a terminal session.
+          </div>
+          <div class="empty-state-hint" x-show="!isAdmin && ports.some(p => p.status === 'open')">
+            Click on an open port in the sidebar to connect.
+          </div>
+          <div class="empty-state-hint" x-show="isViewer">
+            You are in read-only mode. You can view terminal output but cannot send data.
+          </div>
+        </div>
+      </div>
+
+      <!-- Macros Bar -->
+      <div class="macros-bar" x-show="activePort && !isViewer">
+        <span class="label">Macros:</span>
+        <template x-for="(macro, idx) in macros" :key="idx">
+          <span class="macro-group">
+            <button class="macro-btn" @click="doExecuteMacro(idx)" x-text="macro.name" :title="macro.command"></button>
+            <button class="macro-btn macro-delete" @click="doDeleteMacro(idx)" title="Delete macro">&times;</button>
+          </span>
+        </template>
+        <button class="btn btn-sm" @click="showMacroForm = !showMacroForm">+ Macro</button>
+        <div class="macro-form" x-show="showMacroForm">
+          <input placeholder="Name" x-model="newMacroName"
+                 @keydown.enter="doAddMacro" @keydown.escape="showMacroForm = false">
+          <input placeholder="Command" x-model="newMacroCmd"
+                 @keydown.enter="doAddMacro" @keydown.escape="showMacroForm = false">
+          <label class="macro-cr-label">
+            <input type="checkbox" x-model="newMacroCR"> CR
+          </label>
+          <button class="btn btn-sm btn-accent" @click="doAddMacro">Add</button>
+        </div>
+      </div>
+
+      <!-- Status Bar -->
+      <div class="status-bar" :class="'status-' + statusType" x-text="statusMessage"></div>
+    </main>
+  </div>
+
+  <!-- Confirm Dialog -->
+  <div class="confirm-overlay" x-show="confirmAction" x-cloak @click.self="confirmAction = null">
+    <div class="confirm-card">
+      <p x-text="confirmMessage"></p>
+      <div class="confirm-actions">
+        <button class="btn" @click="confirmAction = null">Cancel</button>
+        <button class="btn btn-danger" @click="doConfirm()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tags Editor Modal -->
+  <div class="confirm-overlay" x-show="editingTags" x-cloak @click.self="editingTags = null">
+    <div class="confirm-card" style="text-align: left;">
+      <h3 style="margin-bottom: 0.75rem;">Edit Tags: <span x-text="editingTags?.id"></span></h3>
+      <div class="form-group">
+        <label>Tags (comma-separated)</label>
+        <input class="form-input" x-model="editingTagsValue" placeholder="router, rack-1, cisco"
+               @keydown.enter="saveTags()">
+      </div>
+      <div class="tag-filter" x-show="allTags.length > 0" style="margin-bottom: 0.75rem;">
+        <span style="font-size:0.7rem;color:var(--text-secondary);">Existing:</span>
+        <template x-for="tag in allTags" :key="tag">
+          <button class="tag-btn" @click="addExistingTag(tag)" x-text="tag"></button>
+        </template>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn" @click="editingTags = null">Cancel</button>
+        <button class="btn btn-accent" @click="saveTags()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profile Editor Modal -->
+  <div class="confirm-overlay" x-show="editingProfile" x-cloak @click.self="editingProfile = null">
+    <div class="confirm-card" style="text-align: left;">
+      <h3 style="margin-bottom: 0.75rem;">Device Profile: <span x-text="editingProfile?.id"></span></h3>
+      <div class="settings-grid">
+        <div class="form-group">
+          <label>Baud Rate</label>
+          <select class="form-input" x-model.number="profileForm.baudrate">
+            <option value="9600">9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+            <option value="230400">230400</option>
+            <option value="460800">460800</option>
+            <option value="921600">921600</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Data Bits</label>
+          <select class="form-input" x-model.number="profileForm.databits">
+            <option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Parity</label>
+          <select class="form-input" x-model="profileForm.parity">
+            <option value="none">None</option>
+            <option value="even">Even</option>
+            <option value="odd">Odd</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Stop Bits</label>
+          <select class="form-input" x-model.number="profileForm.stopbits">
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+        <div class="form-group span-2">
+          <label>Flow Control</label>
+          <select class="form-input" x-model="profileForm.flowcontrol">
+            <option value="none">None</option>
+            <option value="rtscts">RTS/CTS</option>
+            <option value="xonxoff">XON/XOFF</option>
+          </select>
+        </div>
+        <div class="form-group span-2">
+          <label><input type="checkbox" x-model="profileForm.auto_open"> Auto-open on startup</label>
+        </div>
+      </div>
+      <div class="confirm-actions" style="margin-top: 0.75rem;">
+        <button class="btn btn-danger" @click="deleteProfile()" x-show="profileExists">Delete</button>
+        <button class="btn" @click="editingProfile = null">Cancel</button>
+        <button class="btn btn-accent" @click="saveProfile()">Save Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recordings Panel -->
+  <div class="confirm-overlay" x-show="showRecordings" x-cloak @click.self="showRecordings = false">
+    <div class="confirm-card" style="text-align: left; width: 500px; max-height: 70vh; overflow-y: auto;">
+      <h3 style="margin-bottom: 0.75rem;">Recordings: <span x-text="activePort"></span></h3>
+      <div x-show="recordings.length === 0" style="color: var(--text-secondary); font-size: 0.85rem;">
+        No recordings yet.
+      </div>
+      <template x-for="rec in recordings" :key="rec.id">
+        <div class="recording-item">
+          <div class="recording-info">
+            <span class="recording-name" x-text="rec.id"></span>
+            <span class="recording-meta"
+                  x-text="(rec.size / 1024).toFixed(1) + ' KB · ' + new Date(rec.modified).toLocaleString()"></span>
+          </div>
+          <div class="recording-actions">
+            <a class="btn btn-sm" :href="'/api/ports/' + activePort + '/recordings/' + rec.id"
+               target="_blank" title="Download">Download</a>
+            <button class="btn btn-sm btn-danger" x-show="isAdmin" @click="deleteRecording(rec.id)">Delete</button>
+          </div>
+        </div>
+      </template>
+      <div class="confirm-actions" style="margin-top: 0.75rem;">
+        <button class="btn" @click="showRecordings = false">Close</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,89 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+static_dir = "frontend"
+
+[auth]
+secret_key = "CHANGE-ME-IN-PRODUCTION"
+algorithm = "HS256"
+token_expire_minutes = 480
+
+[[auth.users]]
+username = "admin"
+# Default password: "admin" (bcrypt hash)
+password_hash = "$2b$12$Gd5y3HmDJr7VUenumbSnO.jycFCjtYYF9ZekGpV5mn1dJE/xWtPfC"
+role = "admin"
+
+[[auth.users]]
+username = "user"
+# Default password: "user" (bcrypt hash)
+password_hash = "$2b$12$.9Ra4O3moOSSVy42iAR9s.x.2kzRXCeuS3Mp7gQia2NwKrLR20zbS"
+role = "user"
+
+# Viewer role — read-only access to open ports (can see output but cannot send data)
+# [[auth.users]]
+# username = "viewer"
+# password_hash = "$2b$12$..."
+# role = "viewer"
+
+# OIDC / SSO integration (e.g. Authentik, Keycloak, Okta)
+# [auth.oidc]
+# enabled = true
+# issuer = "https://auth.example.com/application/o/serwebs/"
+# client_id = "your-client-id-here"
+# username_claim = "preferred_username"
+# role_claim = "groups"
+# admin_groups = ["serwebs-admin"]
+# viewer_groups = ["serwebs-viewer"]
+# default_role = "user"
+
+[serial]
+port_patterns = ["/dev/ttyUSB*", "/dev/ttyACM*"]
+blacklist_patterns = ["/dev/ttyS*"]
+ring_buffer_size = 65536
+max_message_size = 4096
+rate_limit_per_second = 100
+max_clients_per_port = 10
+max_ports = 20
+read_timeout = 0.1
+write_timeout = 1.0
+
+[logging]
+level = "info"
+format = "json"
+
+# Persistent data directory (aliases, tags, profiles, logs, recordings, audit)
+# Relative paths are resolved from config.toml location
+[data]
+directory = "data"
+
+# Audit log — records all user actions (login, port open/close, writes)
+[audit]
+enabled = true
+max_file_size_mb = 10
+max_files = 5
+
+# Per-port session logging — records all serial I/O
+[session_logging]
+enabled = true
+max_file_size_mb = 50
+max_files = 5
+timestamp_prefix = true
+
+# Terminal recording in asciicast v2 format (compatible with asciinema)
+[recordings]
+enabled = true
+max_storage_mb = 500
+
+# SSH gateway — access serial ports via SSH (requires: pip install asyncssh)
+# Connect: ssh -p 2222 admin@host
+[ssh]
+enabled = false
+port = 2222
+# host_key_file = ""  # Auto-generated if empty
+
+# Multi-backend aggregator — proxy mode for central management
+# Requires: pip install pyyaml httpx
+[aggregator]
+enabled = true
+backends_file = "backends.yaml"
