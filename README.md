@@ -191,21 +191,100 @@ Terminal recordings in asciicast v2 format. Play back with `asciinema play recor
 
 ### `[ssh]`
 
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Enable SSH gateway |
+| `port` | `2222` | SSH listen port |
+| `host_key_file` | `""` | Path to SSH host key (auto-generated if empty) |
+
 ```toml
 [ssh]
-enabled = false
+enabled = true
 port = 2222
+# host_key_file = "/path/to/ssh_host_key"  # optional, auto-generated if omitted
 ```
 
-SSH gateway allows accessing serial ports without a browser:
+Requires: `pip install asyncssh` (included in Docker image and `pip install -e ".[ssh]"`).
+
+#### How it works
+
+The SSH gateway authenticates users against the same user database as the web UI (`[[auth.users]]` in config.toml). After login, it presents an interactive menu of currently open serial ports. Selecting a port bridges the SSH session directly to the serial I/O stream, with session replay (last 64 KB) delivered on connect.
+
+- **Viewer** role users can observe port output but cannot send data
+- **Ctrl+]** disconnects from the current port and returns to the menu
+- **Ctrl+C** or **q** at the menu exits the session
+- Session timeout: 2 minutes of inactivity at the menu
+
+If no `host_key_file` is specified, an RSA-2048 host key is auto-generated on first start and saved alongside config.toml (`ssh_host_key` / `ssh_host_key.pub`).
+
+#### Usage examples
 
 ```bash
-ssh -p 2222 admin@host
-# Presents a menu to select an open serial port
-# Ctrl+] to disconnect from port
+# Basic connection
+ssh -p 2222 admin@serwebs-host
+
+# With non-standard SSH key
+ssh -p 2222 -i ~/.ssh/my_key admin@serwebs-host
+
+# Suppress host key prompt on first connect
+ssh -p 2222 -o StrictHostKeyChecking=accept-new admin@serwebs-host
+
+# One-liner for CI/scripts (non-interactive — opens port 1 automatically)
+echo "1" | ssh -p 2222 -o StrictHostKeyChecking=accept-new admin@serwebs-host
 ```
 
-Requires: `pip install asyncssh` (included in Docker image).
+Example session:
+
+```
+$ ssh -p 2222 admin@10.0.0.1
+
+Welcome to SerWebs SSH Gateway, admin!
+Role: admin
+
+Available ports:
+  1. Router Console (Cisco router) [115200 baud]
+  2. Switch Mgmt (HP switch) [9600 baud]
+  q. Quit
+
+Select port: 1
+
+Connected to ttyUSB0. Press Ctrl+] to disconnect.
+
+Router>show version
+Cisco IOS Software, ...
+Router>
+^]
+Disconnected from port.
+
+Available ports:
+  1. Router Console (Cisco router) [115200 baud]
+  2. Switch Mgmt (HP switch) [9600 baud]
+  q. Quit
+
+Select port: q
+Goodbye!
+Connection to 10.0.0.1 closed.
+```
+
+#### Docker deployment with SSH
+
+```yaml
+services:
+  serwebs:
+    build: .
+    ports:
+      - "8080:8080"
+      - "2222:2222"  # SSH gateway
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - serwebs-data:/app/data
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    group_add:
+      - dialout
+```
+
+Make sure `[ssh] enabled = true` in config.toml.
 
 ### `[aggregator]`
 
