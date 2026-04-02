@@ -5,30 +5,76 @@
   var TOKEN_KEY = "serwebs_token";
   var USER_KEY = "serwebs_user";
 
+  /**
+   * Generate a cryptographically secure random string (hex).
+   * Falls back to Math.random only if crypto API is unavailable.
+   */
+  function _secureRandom(bytes) {
+    bytes = bytes || 16;
+    if (window.crypto && window.crypto.getRandomValues) {
+      var buf = new Uint8Array(bytes);
+      window.crypto.getRandomValues(buf);
+      return Array.from(buf).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    }
+    // Fallback for very old browsers — not cryptographically secure
+    var s = "";
+    for (var i = 0; i < bytes * 2; i++) s += Math.floor(Math.random() * 16).toString(16);
+    return s;
+  }
+
+  /**
+   * Safely decode a JWT payload. Returns null on any malformed input.
+   */
+  function _safeDecodePayload(token) {
+    try {
+      var parts = token.split(".");
+      if (parts.length !== 3) return null;
+      // Base64url -> base64
+      var b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      var json = decodeURIComponent(
+        atob(b64).split("").map(function (c) {
+          return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join("")
+      );
+      var payload = JSON.parse(json);
+      if (typeof payload !== "object" || payload === null) return null;
+      return payload;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function getToken() {
     return localStorage.getItem(TOKEN_KEY);
   }
 
   function getUser() {
-    var raw = localStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
+    try {
+      var raw = localStorage.getItem(USER_KEY);
+      if (!raw) return null;
+      var user = JSON.parse(raw);
+      if (typeof user !== "object" || !user.username || !user.role) return null;
+      return user;
+    } catch (e) {
+      return null;
+    }
   }
 
   function isLoggedIn() {
     var token = getToken();
     if (!token) return false;
-    try {
-      var payload = JSON.parse(atob(token.split(".")[1]));
-      return payload.exp * 1000 > Date.now();
-    } catch (e) {
-      return false;
-    }
+    var payload = _safeDecodePayload(token);
+    if (!payload || !payload.exp) return false;
+    return payload.exp * 1000 > Date.now();
   }
 
   function _storeToken(accessToken) {
+    var payload = _safeDecodePayload(accessToken);
+    if (!payload || !payload.sub) {
+      throw new Error("Invalid token");
+    }
     localStorage.setItem(TOKEN_KEY, accessToken);
-    var payload = JSON.parse(atob(accessToken.split(".")[1]));
-    localStorage.setItem(USER_KEY, JSON.stringify({ username: payload.sub, role: payload.role }));
+    localStorage.setItem(USER_KEY, JSON.stringify({ username: payload.sub, role: payload.role || "viewer" }));
     return payload;
   }
 
@@ -69,7 +115,7 @@
   function startOIDCLogin(oidcConfig) {
     // Build OIDC authorization URL (Authorization Code flow with implicit id_token)
     var redirectUri = window.location.origin + "/oidc/callback";
-    var state = Math.random().toString(36).slice(2);
+    var state = _secureRandom(32);
     sessionStorage.setItem("oidc_state", state);
 
     var params = new URLSearchParams({
@@ -78,7 +124,7 @@
       redirect_uri: redirectUri,
       scope: "openid profile email",
       state: state,
-      nonce: Math.random().toString(36).slice(2),
+      nonce: _secureRandom(32),
     });
     window.location.href = oidcConfig.authorize_url + "?" + params.toString();
   }
@@ -92,13 +138,13 @@
     var idToken = params.get("id_token");
     var state = params.get("state");
 
-    // Verify state
+    // Verify state — reject if missing or mismatched (CSRF protection)
     var savedState = sessionStorage.getItem("oidc_state");
-    if (state && savedState && state !== savedState) {
-      console.error("[SerWebs] OIDC state mismatch");
+    sessionStorage.removeItem("oidc_state");
+    if (!state || !savedState || state !== savedState) {
+      console.error("[SerWebs] OIDC state mismatch or missing");
       return false;
     }
-    sessionStorage.removeItem("oidc_state");
 
     if (!idToken) return false;
 

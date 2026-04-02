@@ -37,12 +37,58 @@ class OIDCConfig(BaseModel):
     default_role: str = "user"
 
 
+class LDAPConfig(BaseModel):
+    enabled: bool = False
+    url: str = "ldap://localhost:389"
+    bind_dn: str = ""
+    bind_password: str = ""
+    user_base_dn: str = ""
+    user_filter: str = "(uid={username})"
+    username_attribute: str = "uid"
+    group_base_dn: str = ""
+    group_filter: str = "(member={user_dn})"
+    admin_groups: List[str] = Field(default_factory=lambda: ["serwebs-admin"])
+    viewer_groups: List[str] = Field(default_factory=lambda: ["serwebs-viewer"])
+    default_role: str = "user"
+    use_ssl: bool = False
+    start_tls: bool = False
+    ca_cert_file: str = ""
+
+
+class RADIUSConfig(BaseModel):
+    enabled: bool = False
+    server: str = "localhost"
+    port: int = 1812
+    secret: str = ""
+    timeout: int = 5
+    retries: int = 3
+    nas_identifier: str = "serwebs"
+    admin_filter_id: str = "serwebs-admin"
+    viewer_filter_id: str = "serwebs-viewer"
+    default_role: str = "user"
+
+
+class TACACSConfig(BaseModel):
+    enabled: bool = False
+    server: str = "localhost"
+    port: int = 49
+    secret: str = ""
+    timeout: int = 5
+    service: str = "serwebs"
+    admin_priv_lvl: int = 15
+    viewer_priv_lvl: int = 1
+    default_role: str = "user"
+
+
 class AuthConfig(BaseModel):
     secret_key: str = "CHANGE-ME-IN-PRODUCTION"
     algorithm: str = "HS256"
     token_expire_minutes: int = 480
     users: List[UserConfig] = Field(default_factory=list)
     oidc: OIDCConfig = Field(default_factory=OIDCConfig)
+    ldap: LDAPConfig = Field(default_factory=LDAPConfig)
+    radius: RADIUSConfig = Field(default_factory=RADIUSConfig)
+    tacacs: TACACSConfig = Field(default_factory=TACACSConfig)
 
 
 class ServerConfig(BaseModel):
@@ -96,6 +142,41 @@ class SSHConfig(BaseModel):
     host_key_file: str = ""
 
 
+class AlertingConfig(BaseModel):
+    enabled: bool = False
+    # Webhook
+    webhook_url: str = ""
+    webhook_headers: Dict[str, str] = Field(default_factory=dict)
+    # Email / SMTP
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_use_tls: bool = True
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: List[str] = Field(default_factory=list)
+    # Events to alert on
+    events: List[str] = Field(default_factory=lambda: [
+        "port_open", "port_close", "device_lost", "login_failed",
+        "ws_connect", "recording_start",
+    ])
+
+
+class SyslogConfig(BaseModel):
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 514
+    protocol: str = "udp"  # udp or tcp
+    facility: str = "local0"
+    format: str = "rfc5424"  # rfc3164 or rfc5424
+
+
+class TelnetConfig(BaseModel):
+    enabled: bool = False
+    port: int = 2323
+    timeout: int = 120
+
+
 class AggregatorConfig(BaseModel):
     enabled: bool = False
     backends_file: str = "backends.yaml"
@@ -111,6 +192,9 @@ class AppConfig(BaseModel):
     session_logging: SessionLoggingConfig = Field(default_factory=SessionLoggingConfig)
     recordings: RecordingsConfig = Field(default_factory=RecordingsConfig)
     ssh: SSHConfig = Field(default_factory=SSHConfig)
+    telnet: TelnetConfig = Field(default_factory=TelnetConfig)
+    alerting: AlertingConfig = Field(default_factory=AlertingConfig)
+    syslog: SyslogConfig = Field(default_factory=SyslogConfig)
     aggregator: AggregatorConfig = Field(default_factory=AggregatorConfig)
 
     def get_data_dir(self) -> Path:
@@ -252,3 +336,25 @@ def delete_port_profile(port_id: str) -> dict:
     profiles.pop(port_id, None)
     save_port_profiles(profiles)
     return profiles
+
+
+# --- Runtime users (managed via API, stored in data/users.json) ---
+
+def load_runtime_users() -> List[Dict[str, str]]:
+    """Load runtime-managed users from JSON storage."""
+    data = _load_json("users.json")
+    return data.get("users", [])
+
+
+def save_runtime_users(users: List[Dict[str, str]]) -> None:
+    _save_json("users.json", {"users": users})
+
+
+# --- Port locks ---
+
+def load_port_locks() -> Dict[str, dict]:
+    return _load_json("port_locks.json")
+
+
+def save_port_locks(locks: Dict[str, dict]) -> None:
+    _save_json("port_locks.json", locks)

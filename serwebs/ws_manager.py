@@ -35,7 +35,13 @@ class WsManager:
         return self._ring_buffers[port_id]
 
     async def connect(self, port_id: str, ws: WebSocket) -> None:
-        await ws.accept()
+        # Accept if not already accepted (message-based auth pre-accepts)
+        try:
+            from starlette.websockets import WebSocketState
+            if ws.client_state != WebSocketState.CONNECTED:
+                await ws.accept()
+        except (ImportError, AttributeError):
+            await ws.accept()
         if port_id not in self._connections:
             self._connections[port_id] = []
         self._connections[port_id].append(ws)

@@ -27,10 +27,22 @@ aggregator = [
     "pyyaml>=6.0",
     "httpx>=0.25.0",
 ]
+ldap = [
+    "ldap3>=2.9",
+]
+radius = [
+    "pyrad>=2.4",
+]
+tacacs = [
+    "tacacs_plus>=2.6",
+]
 all = [
     "asyncssh>=2.14.0",
     "pyyaml>=6.0",
     "httpx>=0.25.0",
+    "ldap3>=2.9",
+    "pyrad>=2.4",
+    "tacacs_plus>=2.6",
 ]
 dev = [
     "pytest>=7.0",

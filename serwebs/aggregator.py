@@ -213,6 +213,83 @@ class Aggregator:
             logger.warning("Failed to get token for backend %s: %s", backend.name, e)
         return ""
 
+    def add_backend(self, data: dict) -> BackendConfig:
+        """Add a new backend and persist to YAML file."""
+        backend = BackendConfig(data)
+        # Check for duplicate name
+        for b in self._backends:
+            if b.name == backend.name:
+                raise ValueError(f"Backend '{backend.name}' already exists")
+        self._backends.append(backend)
+        self._persist_backends()
+        logger.info("Backend added: %s -> %s", backend.name, backend.url)
+        return backend
+
+    def update_backend(self, name: str, data: dict) -> Optional[BackendConfig]:
+        """Update an existing backend."""
+        for i, b in enumerate(self._backends):
+            if b.name == name:
+                # Preserve name if not in data
+                data.setdefault("name", name)
+                self._backends[i] = BackendConfig(data)
+                self._persist_backends()
+                logger.info("Backend updated: %s", name)
+                return self._backends[i]
+        return None
+
+    def remove_backend(self, name: str) -> bool:
+        """Remove a backend by name."""
+        for i, b in enumerate(self._backends):
+            if b.name == name:
+                self._backends.pop(i)
+                self._persist_backends()
+                logger.info("Backend removed: %s", name)
+                return True
+        return False
+
+    def _persist_backends(self) -> None:
+        """Save current backend list back to YAML file."""
+        try:
+            import yaml
+        except ImportError:
+            logger.error("pyyaml not installed — cannot persist backends")
+            return
+        data = {"backends": []}
+        for b in self._backends:
+            entry = {"name": b.name, "url": b.url}
+            if b.token:
+                entry["token"] = b.token
+            if b.username:
+                entry["username"] = b.username
+            if b.password:
+                entry["password"] = b.password
+            if not b.verify_ssl:
+                entry["verify_ssl"] = False
+            data["backends"].append(entry)
+        try:
+            with open(self._backends_file, "w") as f:
+                yaml.safe_dump(data, f, default_flow_style=False)
+        except Exception as e:
+            logger.error("Failed to persist backends: %s", e)
+
+    async def remote_open_port(self, backend_name: str, port_id: str,
+                                settings: Optional[dict] = None) -> dict:
+        """Open a port on a remote backend."""
+        body = {"settings": settings or {"baudrate": 115200}}
+        return await self.proxy_request(backend_name, f"/api/ports/{port_id}/open", "POST", body)
+
+    async def remote_close_port(self, backend_name: str, port_id: str) -> dict:
+        """Close a port on a remote backend."""
+        return await self.proxy_request(backend_name, f"/api/ports/{port_id}/close", "POST")
+
+    async def remote_rename_port(self, backend_name: str, port_id: str, alias: str) -> dict:
+        """Rename a port on a remote backend."""
+        return await self.proxy_request(backend_name, f"/api/ports/{port_id}/rename", "POST", {"alias": alias})
+
+    async def remote_write_port(self, backend_name: str, port_id: str, data: str) -> dict:
+        """Write data to a port on a remote backend."""
+        return await self.proxy_request(backend_name, f"/api/ports/{port_id}/write", "POST", {"data": data})
+
     def _find_backend(self, name: str) -> Optional[BackendConfig]:
         for b in self._backends:
             if b.name == name:

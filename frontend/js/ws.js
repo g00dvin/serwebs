@@ -21,22 +21,31 @@
 
   /**
    * Connect to a WebSocket.
-   * @param {string} [overrideUrl] — full ws:// URL for remote backend connections.
+   * @param {string} [overrideUrl] — full ws:// URL for remote backend connections
+   *   (remote URLs still carry token in query param — backend-to-backend only).
    */
   SerialWebSocket.prototype.connect = function (overrideUrl) {
     var self = this;
     var url;
     if (overrideUrl) {
+      // Remote backend — token is already embedded by aggregator (backend-to-backend)
       url = overrideUrl;
+      this._authViaMessage = false;
     } else {
+      // Local — connect without token in URL, send auth as first message
       var proto = location.protocol === "https:" ? "wss:" : "ws:";
-      url = proto + "//" + location.host + "/ws/" + this.portId + "?token=" + this.token;
+      url = proto + "//" + location.host + "/ws/" + this.portId;
+      this._authViaMessage = true;
     }
     this._remoteUrl = overrideUrl || null;
 
     this._ws = new WebSocket(url);
 
     this._ws.onopen = function () {
+      // Send token as first message for local connections (avoids token in URL/logs)
+      if (self._authViaMessage && self.token) {
+        self._ws.send(JSON.stringify({ type: "auth", token: self.token }));
+      }
       self._reconnectAttempt = 0;
       self._startPing();
       if (self.onOpen) self.onOpen();

@@ -6,6 +6,7 @@ services:
     ports:
       - "8088:8080"
       - "2222:2222"  # SSH gateway (optional)
+      - "2323:2323"  # Telnet gateway (optional)
     volumes:
       - ./config.toml:/app/config.toml:ro
       - ./backends.yaml:/app/backends.yaml:ro

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+
+import bcrypt
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -247,6 +249,14 @@ async def rest_write(port_id: str, request: Request, user: dict = Depends(requir
     """
     if user.get("role") == "viewer":
         raise HTTPException(status_code=403, detail="Viewers cannot write to ports")
+
+    # Check port lock
+    from serwebs.config import load_port_locks
+    locks = load_port_locks()
+    lock_info = locks.get(port_id)
+    if lock_info and lock_info.get("user") != user["username"]:
+        raise HTTPException(status_code=423, detail=f"Port is locked by {lock_info.get('user')}")
+
     pm = _get_port_manager()
     worker = pm.get_worker(port_id)
     if not worker or not worker.is_running:
@@ -445,7 +455,9 @@ async def stop_recording(port_id: str, user: dict = Depends(require_role("user")
 
 
 @router.get("/api/ports/{port_id}/recordings/{rec_id}")
-async def get_recording(port_id: str, rec_id: str, user: dict = Depends(get_current_user)):
+async def get_recording(port_id: str, rec_id: str,
+                        inline: bool = Query(default=False),
+                        user: dict = Depends(get_current_user)):
     from serwebs.recording import get_recorder
     recorder = get_recorder()
     if not recorder:
@@ -459,6 +471,10 @@ async def get_recording(port_id: str, rec_id: str, user: dict = Depends(get_curr
         with open(fpath, "rb") as f:
             while chunk := f.read(65536):
                 yield chunk
+
+    if inline:
+        # For in-browser playback — serve with permissive CORS and no download header
+        return StreamingResponse(iterfile(), media_type="application/json")
 
     return StreamingResponse(iterfile(), media_type="application/json",
                              headers={"Content-Disposition": f"attachment; filename={rec_id}.cast"})
@@ -544,6 +560,285 @@ async def aggregator_proxy(backend_name: str, path: str, request: Request,
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
     return result
+
+
+# ─── Aggregator Backend CRUD ───
+
+@router.post("/api/aggregator/backends")
+async def add_aggregator_backend(request: Request, user: dict = Depends(require_role("admin"))):
+    """Add a new backend to the aggregator."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    body = await request.json()
+    if not body.get("name") or not body.get("url"):
+        raise HTTPException(status_code=400, detail="'name' and 'url' are required")
+    try:
+        backend = agg.add_backend(body)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    _get_audit_logger().log("aggregator_backend_add", user=user["username"],
+                            details={"name": backend.name, "url": backend.url})
+    return {"name": backend.name, "url": backend.url}
+
+
+@router.put("/api/aggregator/backends/{backend_name}")
+async def update_aggregator_backend(backend_name: str, request: Request,
+                                    user: dict = Depends(require_role("admin"))):
+    """Update an existing backend."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    body = await request.json()
+    backend = agg.update_backend(backend_name, body)
+    if not backend:
+        raise HTTPException(status_code=404, detail=f"Backend '{backend_name}' not found")
+    _get_audit_logger().log("aggregator_backend_update", user=user["username"],
+                            details={"name": backend.name})
+    return {"name": backend.name, "url": backend.url}
+
+
+@router.delete("/api/aggregator/backends/{backend_name}")
+async def delete_aggregator_backend(backend_name: str, user: dict = Depends(require_role("admin"))):
+    """Remove a backend from the aggregator."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    if not agg.remove_backend(backend_name):
+        raise HTTPException(status_code=404, detail=f"Backend '{backend_name}' not found")
+    _get_audit_logger().log("aggregator_backend_remove", user=user["username"],
+                            details={"name": backend_name})
+    return {"status": "deleted"}
+
+
+# ─── Aggregator Remote Port Management ───
+
+@router.post("/api/aggregator/ports/{backend_name}/{port_id}/open")
+async def aggregator_open_port(backend_name: str, port_id: str, request: Request,
+                                user: dict = Depends(require_role("admin"))):
+    """Open a port on a remote backend."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    body = await request.json() if request.headers.get("content-length") else {}
+    settings = body.get("settings", {"baudrate": 115200})
+    result = await agg.remote_open_port(backend_name, port_id, settings)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    _get_audit_logger().log("aggregator_port_open", user=user["username"],
+                            details={"backend": backend_name, "port_id": port_id})
+    return result
+
+
+@router.post("/api/aggregator/ports/{backend_name}/{port_id}/close")
+async def aggregator_close_port(backend_name: str, port_id: str,
+                                 user: dict = Depends(require_role("admin"))):
+    """Close a port on a remote backend."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    result = await agg.remote_close_port(backend_name, port_id)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    _get_audit_logger().log("aggregator_port_close", user=user["username"],
+                            details={"backend": backend_name, "port_id": port_id})
+    return result
+
+
+@router.post("/api/aggregator/ports/{backend_name}/{port_id}/rename")
+async def aggregator_rename_port(backend_name: str, port_id: str, request: Request,
+                                  user: dict = Depends(require_role("admin"))):
+    """Rename a port on a remote backend."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    body = await request.json()
+    alias = body.get("alias", "")
+    result = await agg.remote_rename_port(backend_name, port_id, alias)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+@router.post("/api/aggregator/ports/{backend_name}/{port_id}/write")
+async def aggregator_write_port(backend_name: str, port_id: str, request: Request,
+                                 user: dict = Depends(require_role("user"))):
+    """Write data to a port on a remote backend."""
+    from serwebs.aggregator import get_aggregator
+    agg = get_aggregator()
+    if not agg:
+        raise HTTPException(status_code=400, detail="Aggregator is not enabled")
+    body = await request.json()
+    data = body.get("data", "")
+    result = await agg.remote_write_port(backend_name, port_id, data)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+# ─── Port Locking ───
+
+@router.post("/api/ports/{port_id}/lock")
+async def lock_port(port_id: str, user: dict = Depends(require_role("user"))):
+    """Lock a port for exclusive access. Only the lock holder can write."""
+    from serwebs.config import load_port_locks, save_port_locks
+    locks = load_port_locks()
+    if port_id in locks:
+        existing = locks[port_id]
+        if existing.get("user") != user["username"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Port is locked by {existing.get('user')}"
+            )
+        return {"status": "already_locked", "locked_by": user["username"]}
+
+    from datetime import datetime, timezone
+    locks[port_id] = {
+        "user": user["username"],
+        "locked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_port_locks(locks)
+    _get_audit_logger().log("port_lock", user=user["username"], port_id=port_id)
+    return {"status": "locked", "locked_by": user["username"]}
+
+
+@router.post("/api/ports/{port_id}/unlock")
+async def unlock_port(port_id: str, user: dict = Depends(require_role("user"))):
+    """Unlock a port. Only the lock holder or an admin can unlock."""
+    from serwebs.config import load_port_locks, save_port_locks
+    locks = load_port_locks()
+    if port_id not in locks:
+        return {"status": "not_locked"}
+
+    lock_info = locks[port_id]
+    if lock_info.get("user") != user["username"] and user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Port is locked by {lock_info.get('user')}. Only the holder or an admin can unlock."
+        )
+
+    del locks[port_id]
+    save_port_locks(locks)
+    _get_audit_logger().log("port_unlock", user=user["username"], port_id=port_id)
+    return {"status": "unlocked"}
+
+
+@router.get("/api/ports/{port_id}/lock")
+async def get_lock_status(port_id: str, user: dict = Depends(get_current_user)):
+    """Get lock status for a port."""
+    from serwebs.config import load_port_locks
+    locks = load_port_locks()
+    lock = locks.get(port_id)
+    if lock:
+        return {"locked": True, "locked_by": lock.get("user"), "locked_at": lock.get("locked_at")}
+    return {"locked": False}
+
+
+# ─── User Management API ───
+
+@router.get("/api/users")
+async def list_users(user: dict = Depends(require_role("admin"))):
+    """List all runtime-managed users (not config.toml users)."""
+    from serwebs.config import load_runtime_users
+    runtime = load_runtime_users()
+    # Also include config.toml users (read-only)
+    cfg_users = [{"username": u.username, "role": u.role, "source": "config"} for u in get_config().auth.users]
+    api_users = [{"username": u["username"], "role": u.get("role", "user"), "source": "api"} for u in runtime]
+    return {"users": cfg_users + api_users}
+
+
+@router.post("/api/users")
+async def create_user(request: Request, user: dict = Depends(require_role("admin"))):
+    """Create a new runtime-managed user."""
+    from serwebs.config import load_runtime_users, save_runtime_users
+    body = await request.json()
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+    role = body.get("role", "user")
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="'username' and 'password' are required")
+    if role not in ("admin", "user", "viewer"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin', 'user', or 'viewer'")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    # Check for duplicates in config.toml users
+    for u in get_config().auth.users:
+        if u.username == username:
+            raise HTTPException(status_code=409, detail=f"User '{username}' already exists in config")
+
+    runtime = load_runtime_users()
+    for u in runtime:
+        if u.get("username") == username:
+            raise HTTPException(status_code=409, detail=f"User '{username}' already exists")
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    runtime.append({"username": username, "password_hash": password_hash, "role": role})
+    save_runtime_users(runtime)
+
+    _get_audit_logger().log("user_create", user=user["username"], details={"new_user": username, "role": role})
+    return {"username": username, "role": role, "source": "api"}
+
+
+@router.put("/api/users/{username}")
+async def update_user(username: str, request: Request, user: dict = Depends(require_role("admin"))):
+    """Update a runtime-managed user (role and/or password)."""
+    from serwebs.config import load_runtime_users, save_runtime_users
+
+    # Cannot modify config.toml users
+    for u in get_config().auth.users:
+        if u.username == username:
+            raise HTTPException(status_code=400, detail=f"User '{username}' is managed in config.toml, not via API")
+
+    runtime = load_runtime_users()
+    target = None
+    for u in runtime:
+        if u.get("username") == username:
+            target = u
+            break
+    if not target:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+
+    body = await request.json()
+    if "role" in body:
+        if body["role"] not in ("admin", "user", "viewer"):
+            raise HTTPException(status_code=400, detail="Role must be 'admin', 'user', or 'viewer'")
+        target["role"] = body["role"]
+    if "password" in body:
+        if len(body["password"]) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        target["password_hash"] = bcrypt.hashpw(body["password"].encode(), bcrypt.gensalt()).decode()
+
+    save_runtime_users(runtime)
+    _get_audit_logger().log("user_update", user=user["username"], details={"target_user": username})
+    return {"username": username, "role": target.get("role", "user")}
+
+
+@router.delete("/api/users/{username}")
+async def delete_user(username: str, user: dict = Depends(require_role("admin"))):
+    """Delete a runtime-managed user."""
+    from serwebs.config import load_runtime_users, save_runtime_users
+
+    # Cannot delete config.toml users
+    for u in get_config().auth.users:
+        if u.username == username:
+            raise HTTPException(status_code=400, detail=f"User '{username}' is managed in config.toml, not via API")
+
+    runtime = load_runtime_users()
+    new_runtime = [u for u in runtime if u.get("username") != username]
+    if len(new_runtime) == len(runtime):
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+
+    save_runtime_users(new_runtime)
+    _get_audit_logger().log("user_delete", user=user["username"], details={"deleted_user": username})
+    return {"status": "deleted"}
 
 
 # ─── Health / Metrics ───

@@ -76,6 +76,9 @@ document.addEventListener("alpine:init", function () {
       isRecording: false,
       showRecordings: false,
       recordings: [],
+      playingRecording: false,
+      playingRecordingId: "",
+      _playerTerm: null,
 
       // Aggregator
       _activePortMeta: null,
@@ -483,6 +486,79 @@ document.addEventListener("alpine:init", function () {
         } catch (e) { /* ignore */ }
       },
 
+      playRecording: async function (recId) {
+        var self = this;
+        if (!this.activePort) return;
+        this.playingRecording = true;
+        this.playingRecordingId = recId;
+
+        this.$nextTick(function () {
+          var container = document.getElementById("recording-player");
+          if (!container) return;
+          while (container.firstChild) container.removeChild(container.firstChild);
+
+          // Create an xterm instance for playback
+          var term = new Terminal({
+            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+            fontSize: 14,
+            theme: { background: "#0d0d0d", foreground: "#e0e0e0" },
+            cols: 120,
+            rows: 30,
+            disableStdin: true,
+            cursorBlink: false,
+          });
+          term.open(container);
+          self._playerTerm = term;
+
+          // Fetch and play the recording
+          var url = self._recApiBase(self.activePort) + "/recordings/" + encodeURIComponent(recId) + "?inline=true";
+          fetch(url, { headers: Auth.authHeaders() })
+            .then(function (resp) { return resp.text(); })
+            .then(function (text) {
+              var lines = text.trim().split("\n");
+              if (lines.length === 0) return;
+
+              // Skip header (first line)
+              var events = [];
+              for (var i = 1; i < lines.length; i++) {
+                try {
+                  var ev = JSON.parse(lines[i]);
+                  if (Array.isArray(ev) && ev.length >= 3) {
+                    events.push({ time: ev[0], type: ev[1], data: ev[2] });
+                  }
+                } catch (e) { /* skip invalid lines */ }
+              }
+
+              // Schedule events for playback with actual timing
+              var startTime = Date.now();
+              events.forEach(function (ev) {
+                if (ev.type === "o") {
+                  var delay = ev.time * 1000;
+                  // Cap delay at 2 seconds to avoid long pauses
+                  if (delay > 2000) delay = 2000;
+                  setTimeout(function () {
+                    if (self._playerTerm) {
+                      self._playerTerm.write(ev.data);
+                    }
+                  }, delay);
+                }
+              });
+            })
+            .catch(function (e) {
+              term.write("\r\nFailed to load recording: " + e.message + "\r\n");
+            });
+        });
+      },
+
+      stopPlayback: function () {
+        if (this._playerTerm) {
+          this._playerTerm.dispose();
+          this._playerTerm = null;
+        }
+        this.playingRecording = false;
+        this.playingRecordingId = "";
+      },
+
       deleteRecording: async function (recId) {
         if (!this.activePort) return;
         try {
@@ -579,7 +655,7 @@ document.addEventListener("alpine:init", function () {
         var container = document.getElementById("terminal-container");
         if (!container) return;
 
-        container.innerHTML = "";
+        while (container.firstChild) container.removeChild(container.firstChild);
 
         this._terminal = new TerminalManager();
         this._terminal.open(container);
@@ -669,7 +745,7 @@ document.addEventListener("alpine:init", function () {
         this.terminalConnected = false;
         this.isRecording = false;
         var container = document.getElementById("terminal-container");
-        if (container) container.innerHTML = "";
+        if (container) { while (container.firstChild) container.removeChild(container.firstChild); }
       },
 
       disconnectTerminal: function () {

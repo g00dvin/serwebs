@@ -36,6 +36,25 @@ class AuditLogger:
         except OSError as e:
             logger.error("Audit write failed: %s", e)
 
+        # Forward to alerting
+        try:
+            from serwebs.alerting import get_alerter
+            alerter = get_alerter()
+            if alerter:
+                alerter.send(event, user=user, port_id=port_id, **(details or {}))
+        except Exception:
+            pass
+
+        # Forward to syslog
+        try:
+            from serwebs.syslog_handler import get_syslog
+            syslog_fwd = get_syslog()
+            if syslog_fwd:
+                severity = 4 if "fail" in event else 6  # warning for failures, info for rest
+                syslog_fwd.send(event, severity=severity, user=user, port_id=port_id)
+        except Exception:
+            pass
+
     def query(
         self,
         since: Optional[datetime] = None,

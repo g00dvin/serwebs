@@ -1,12 +1,16 @@
 FROM python:3.12-slim AS base
 
+# System dependencies for pyudev and LDAP
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libudev-dev && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        libudev-dev \
+        libldap2-dev \
+        libsasl2-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
+# Install all Python dependencies (cached layer)
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
     "fastapi>=0.104.0" \
@@ -19,8 +23,12 @@ RUN pip install --no-cache-dir \
     "pydantic>=2.0" \
     "pyyaml>=6.0" \
     "httpx>=0.25.0" \
-    "asyncssh>=2.14.0"
+    "asyncssh>=2.14.0" \
+    "ldap3>=2.9" \
+    "pyrad>=2.4" \
+    "tacacs_plus>=2.6"
 
+# Copy application code
 COPY serwebs/ ./serwebs/
 COPY frontend/ ./frontend/
 COPY config.toml ./
@@ -33,6 +41,7 @@ VOLUME /app/data
 
 EXPOSE 8080
 EXPOSE 2222
+EXPOSE 2323
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1

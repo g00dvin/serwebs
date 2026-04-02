@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 
 from serwebs import __version__
@@ -131,6 +131,30 @@ async def lifespan(app: FastAPI):
             host_key_file=cfg.ssh.host_key_file,
         )
 
+    # Start Telnet gateway if enabled
+    if cfg.telnet.enabled:
+        from serwebs.telnet_gateway import start_telnet_gateway
+        await start_telnet_gateway(
+            host=cfg.server.host,
+            port=cfg.telnet.port,
+            timeout=cfg.telnet.timeout,
+        )
+
+    # Initialize alerting if enabled
+    if cfg.alerting.enabled:
+        from serwebs.alerting import init_alerter
+        alerter = init_alerter()
+        if alerter:
+            logger.info("Alerting enabled (webhook=%s, smtp=%s)",
+                        bool(cfg.alerting.webhook_url), bool(cfg.alerting.smtp_host))
+
+    # Initialize syslog forwarding if enabled
+    if cfg.syslog.enabled:
+        from serwebs.syslog_handler import init_syslog
+        syslog_fwd = init_syslog()
+        if syslog_fwd:
+            logger.info("Syslog forwarding enabled -> %s:%d", cfg.syslog.host, cfg.syslog.port)
+
     # Initialize aggregator if enabled
     if cfg.aggregator.enabled:
         from serwebs.aggregator import init_aggregator
@@ -150,6 +174,14 @@ async def lifespan(app: FastAPI):
     if cfg.ssh.enabled:
         from serwebs.ssh_gateway import stop_ssh_gateway
         await stop_ssh_gateway()
+    if cfg.telnet.enabled:
+        from serwebs.telnet_gateway import stop_telnet_gateway
+        await stop_telnet_gateway()
+    if cfg.syslog.enabled:
+        from serwebs.syslog_handler import get_syslog
+        syslog_fwd = get_syslog()
+        if syslog_fwd:
+            syslog_fwd.close()
     await _port_manager.shutdown()
     await _ws_manager.shutdown()
     logger.info("Shutdown complete")
@@ -167,6 +199,28 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+
+    # Security headers middleware
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # CSP: allow self scripts/styles + inline styles (Alpine.js needs them) + wss for WebSocket
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws: wss:; "
+            "img-src 'self' data:; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        return response
 
     # Include routers
     from serwebs.routes_api import router as api_router

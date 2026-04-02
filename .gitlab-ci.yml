@@ -1,0 +1,52 @@
+stages:
+  - build
+
+variables:
+  DOCKER_IMAGE: ${DOCKERHUB_USERNAME}/serwebs
+
+# Build and push Docker image when a tag is created
+docker-build:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  rules:
+    - if: $CI_COMMIT_TAG
+  before_script:
+    - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+  script:
+    # Extract version from tag (strip leading 'v' if present)
+    - VERSION=${CI_COMMIT_TAG#v}
+    # Determine if this is a stable release (e.g., 1.2.3) or prerelease (e.g., 1.2.3-rc1)
+    - |
+      if echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f1-2)
+        docker build \
+          --label "org.opencontainers.image.version=${VERSION}" \
+          --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+          --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --label "org.opencontainers.image.source=${CI_PROJECT_URL}" \
+          --label "org.opencontainers.image.title=SerWebs" \
+          --label "org.opencontainers.image.description=Web Serial Terminal Manager" \
+          -t "${DOCKER_IMAGE}:${VERSION}" \
+          -t "${DOCKER_IMAGE}:${MINOR}" \
+          -t "${DOCKER_IMAGE}:${MAJOR}" \
+          -t "${DOCKER_IMAGE}:latest" \
+          .
+        docker push "${DOCKER_IMAGE}:${VERSION}"
+        docker push "${DOCKER_IMAGE}:${MINOR}"
+        docker push "${DOCKER_IMAGE}:${MAJOR}"
+        docker push "${DOCKER_IMAGE}:latest"
+      else
+        docker build \
+          --label "org.opencontainers.image.version=${VERSION}" \
+          --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+          -t "${DOCKER_IMAGE}:${VERSION}" \
+          .
+        docker push "${DOCKER_IMAGE}:${VERSION}"
+      fi
+  after_script:
+    - docker logout
