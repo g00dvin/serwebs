@@ -209,10 +209,10 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        # CSP: allow self scripts/styles + inline styles (Alpine.js needs them) + wss for WebSocket
+        # CSP: self-hosted scripts/styles only; Alpine.js expression evaluation requires unsafe-eval.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self'; "
+            "script-src 'self' 'unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'; "
             "connect-src 'self' ws: wss:; "
             "img-src 'self' data:; "

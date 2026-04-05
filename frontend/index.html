@@ -33,7 +33,7 @@
     <div class="login-card">
       <h1>SerWebs</h1>
       <p>Web Serial Terminal Manager</p>
-      <form @submit.prevent="doLogin" x-show="authConfig?.local_auth !== false">
+      <form @submit.prevent="doLogin" x-show="localAuthEnabled()">
         <div class="form-group">
           <label for="login-user">Username</label>
           <input id="login-user" class="form-input" type="text"
@@ -51,9 +51,9 @@
                 :class="{ loading: loginLoading }" :disabled="loginLoading"
                 style="margin-top: 1rem;">Login</button>
       </form>
-      <template x-if="authConfig?.oidc?.enabled">
+      <template x-if="oidcEnabled()">
         <div>
-          <div class="login-divider" x-show="authConfig?.local_auth">— or —</div>
+          <div class="login-divider" x-show="localAuthEnabled()">— or —</div>
           <button class="btn btn-accent btn-block"
                   @click="SerWebsAuth.startOIDCLogin(authConfig.oidc)">Login with SSO</button>
         </div>
@@ -69,8 +69,8 @@
       <div class="sidebar-header">
         <h2>SerWebs</h2>
         <div class="user-badge">
-          <span class="role-tag" :class="user?.role" x-text="user?.role"></span>
-          <span class="user-info" x-text="user?.username"></span>
+          <span class="role-tag" :class="currentUserRole()" x-text="currentUserRole()"></span>
+          <span class="user-info" x-text="currentUsername()"></span>
           <button class="btn btn-sm" @click="doLogout" title="Logout" aria-label="Logout">Exit</button>
         </div>
       </div>
@@ -115,7 +115,7 @@
               </template>
             </div>
             <div class="port-meta" x-show="port.status === 'open'">
-              <span x-text="port.settings?.baudrate + ' baud'"></span>
+              <span x-text="portBaudrateLabel(port)"></span>
               <span x-show="port.clients > 0" x-text="' · ' + port.clients + ' client(s)'"></span>
             </div>
             <!-- Rename form -->
@@ -224,15 +224,15 @@
       <!-- Toolbar -->
       <div class="toolbar" x-show="activePort">
         <span class="toolbar-title">
-          <span x-text="(ports.find(p => p.id === activePort)?.alias) || activePort"></span>
-          <span class="toolbar-port-sub" x-show="ports.find(p => p.id === activePort)?.alias"
+          <span x-text="activePortLabel()"></span>
+          <span class="toolbar-port-sub" x-show="activePortHasAlias()"
                 x-text="'(' + activePort + ')'"></span>
           <span class="conn-dot" :class="terminalConnected ? 'connected' : 'disconnected'"
                 :title="terminalConnected ? 'Connected' : 'Disconnected'"></span>
           <span class="remote-badge"
-                x-show="_activePortMeta && _activePortMeta._remote"
-                x-text="_activePortMeta?._backend"
-                :title="_activePortMeta?._backendUrl"></span>
+                x-show="activeRemoteBackendName()"
+                x-text="activeRemoteBackendName()"
+                :title="activeRemoteBackendUrl()"></span>
           <span class="viewer-badge" x-show="isViewer">READ-ONLY</span>
         </span>
         <button class="btn" :class="{ active: hexMode }" @click="toggleHexMode"
@@ -263,10 +263,10 @@
         <div class="empty-state" x-show="!activePort">
           <div class="empty-state-icon">⚡</div>
           <div class="empty-state-text">Select a port to connect</div>
-          <div class="empty-state-hint" x-show="isAdmin && ports.some(p => p.status === 'free')">
+          <div class="empty-state-hint" x-show="isAdmin && hasPortWithStatus('free')">
             Open a port from the sidebar, then click on it to start a terminal session.
           </div>
-          <div class="empty-state-hint" x-show="!isAdmin && ports.some(p => p.status === 'open')">
+          <div class="empty-state-hint" x-show="!isAdmin && hasPortWithStatus('open')">
             Click on an open port in the sidebar to connect.
           </div>
           <div class="empty-state-hint" x-show="isViewer">
@@ -303,7 +303,7 @@
   </div>
 
   <!-- Confirm Dialog -->
-  <div class="confirm-overlay" x-show="confirmAction" x-cloak @click.self="confirmAction = null">
+  <div class="confirm-overlay" x-show="confirmAction" x-cloak style="display: none;" @click.self="confirmAction = null">
     <div class="confirm-card">
       <p x-text="confirmMessage"></p>
       <div class="confirm-actions">
@@ -314,9 +314,9 @@
   </div>
 
   <!-- Tags Editor Modal -->
-  <div class="confirm-overlay" x-show="editingTags" x-cloak @click.self="editingTags = null">
+  <div class="confirm-overlay" x-show="editingTags" x-cloak style="display: none;" @click.self="editingTags = null">
     <div class="confirm-card" style="text-align: left;">
-      <h3 style="margin-bottom: 0.75rem;">Edit Tags: <span x-text="editingTags?.id"></span></h3>
+      <h3 style="margin-bottom: 0.75rem;">Edit Tags: <span x-text="editingTagsId()"></span></h3>
       <div class="form-group">
         <label>Tags (comma-separated)</label>
         <input class="form-input" x-model="editingTagsValue" placeholder="router, rack-1, cisco"
@@ -336,9 +336,9 @@
   </div>
 
   <!-- Profile Editor Modal -->
-  <div class="confirm-overlay" x-show="editingProfile" x-cloak @click.self="editingProfile = null">
+  <div class="confirm-overlay" x-show="editingProfile" x-cloak style="display: none;" @click.self="editingProfile = null">
     <div class="confirm-card" style="text-align: left;">
-      <h3 style="margin-bottom: 0.75rem;">Device Profile: <span x-text="editingProfile?.id"></span></h3>
+      <h3 style="margin-bottom: 0.75rem;">Device Profile: <span x-text="editingProfileId()"></span></h3>
       <div class="settings-grid">
         <div class="form-group">
           <label>Baud Rate</label>
@@ -396,7 +396,7 @@
   </div>
 
   <!-- Recordings Panel -->
-  <div class="confirm-overlay" x-show="showRecordings" x-cloak @click.self="showRecordings = false">
+  <div class="confirm-overlay" x-show="showRecordings" x-cloak style="display: none;" @click.self="showRecordings = false">
     <div class="confirm-card" style="text-align: left; width: 500px; max-height: 70vh; overflow-y: auto;">
       <h3 style="margin-bottom: 0.75rem;">Recordings: <span x-text="activePort"></span></h3>
       <div x-show="recordings.length === 0" style="color: var(--text-secondary); font-size: 0.85rem;">
@@ -424,7 +424,7 @@
   </div>
 
   <!-- Recording Player Modal -->
-  <div class="confirm-overlay" x-show="playingRecording" x-cloak @click.self="stopPlayback()">
+  <div class="confirm-overlay" x-show="playingRecording" x-cloak style="display: none;" @click.self="stopPlayback()">
     <div class="confirm-card" style="text-align: left; width: 80vw; max-width: 900px;">
       <h3 style="margin-bottom: 0.75rem;">Recording: <span x-text="playingRecordingId"></span></h3>
       <div id="recording-player" style="background: #0d0d0d; border-radius: 4px; min-height: 400px; overflow: hidden;"></div>

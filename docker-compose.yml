@@ -4,18 +4,18 @@ services:
     container_name: serwebs
     restart: unless-stopped
     ports:
-      - "8088:8080"
-      - "2222:2222"  # SSH gateway (optional)
-      - "2323:2323"  # Telnet gateway (optional)
+      - "18080:8080"
+      - "12222:2222"  # SSH gateway (optional)
+      - "12323:2323"  # Telnet gateway (optional)
     volumes:
       - ./config.toml:/app/config.toml:ro
       - ./backends.yaml:/app/backends.yaml:ro
       - serwebs-data:/app/data
     # Grant access to serial devices (uncomment if this node has serial ports)
-    # devices:
-    #   - /dev/ttyUSB0:/dev/ttyUSB0
-    # group_add:
-    #   - dialout
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    group_add:
+      - dialout
     environment:
       - SERWEBS_CONFIG=/app/config.toml
 

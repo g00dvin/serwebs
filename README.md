@@ -890,7 +890,7 @@ Then update each `integrity="sha384-..."` attribute in `frontend/index.html` wit
 | `vendor/alpine-collapse.min.js` | Collapsible panels |
 | `vendor/xterm.min.css` | Terminal styles |
 
-Application's own files (`js/app.js`, `js/auth.js`, etc.) do not have SRI because they are developed in-tree and change frequently. They are protected by the `Content-Security-Policy: script-src 'self'` header, which only allows scripts served from the same origin.
+Application files (`js/app.js`, `js/auth.js`, etc.) do not have SRI because they are developed in-tree and change frequently. They are protected by a same-origin CSP (`script-src 'self' 'unsafe-eval'`): scripts may only load from the same origin, and `unsafe-eval` is enabled because Alpine.js evaluates directive expressions at runtime.
 
 ## Debugging
 

@@ -85,5 +85,5 @@ port = 2222
 # Multi-backend aggregator — proxy mode for central management
 # Requires: pip install pyyaml httpx
 [aggregator]
-enabled = true
+enabled = false
 backends_file = "backends.yaml"

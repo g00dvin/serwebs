@@ -120,6 +120,66 @@ document.addEventListener("alpine:init", function () {
         return this.user && this.user.role === "admin";
       },
 
+      localAuthEnabled: function () {
+        return !this.authConfig || this.authConfig.local_auth !== false;
+      },
+
+      oidcEnabled: function () {
+        return !!(this.authConfig && this.authConfig.oidc && this.authConfig.oidc.enabled);
+      },
+
+      currentUserRole: function () {
+        return this.user && this.user.role ? this.user.role : "";
+      },
+
+      currentUsername: function () {
+        return this.user && this.user.username ? this.user.username : "";
+      },
+
+      findPortById: function (portId) {
+        if (!portId) return null;
+        return this.ports.find(function (port) { return port.id === portId; }) || null;
+      },
+
+      portBaudrateLabel: function (port) {
+        if (!port || !port.settings || port.settings.baudrate === undefined || port.settings.baudrate === null) {
+          return "";
+        }
+        return port.settings.baudrate + " baud";
+      },
+
+      activePortLabel: function () {
+        var port = this.findPortById(this.activePort);
+        return (port && port.alias) || this.activePort || "";
+      },
+
+      activePortHasAlias: function () {
+        var port = this.findPortById(this.activePort);
+        return !!(port && port.alias);
+      },
+
+      activeRemoteBackendName: function () {
+        if (!this._activePortMeta || !this._activePortMeta._remote) return "";
+        return this._activePortMeta._backend || "";
+      },
+
+      activeRemoteBackendUrl: function () {
+        if (!this._activePortMeta || !this._activePortMeta._remote) return "";
+        return this._activePortMeta._backendUrl || "";
+      },
+
+      hasPortWithStatus: function (status) {
+        return this.ports.some(function (port) { return port.status === status; });
+      },
+
+      editingTagsId: function () {
+        return this.editingTags ? this.editingTags.id : "";
+      },
+
+      editingProfileId: function () {
+        return this.editingProfile ? this.editingProfile.id : "";
+      },
+
       init: async function () {
         var self = this;
 
